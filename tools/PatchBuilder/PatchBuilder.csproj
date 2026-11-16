@@ -1,4 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
-  <ItemGroup><PackageReference Include="Mono.Cecil" Version="0.11.6" /></ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../shared/AncientAffectionCompat.Patching.csproj" />
+    <None Include="../../third-party/Mono.Cecil.LICENSE.txt" Link="Mono.Cecil.LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

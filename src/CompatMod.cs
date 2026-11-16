@@ -10,7 +10,7 @@ public static class CompatMod
     internal const string HarmonyId = "Nayuri.AncientAffectionCompat";
     internal static Assembly Ancient = null!;
     private static bool _initialized;
-    public static void Initialize() => Log("Compatibility bridge loaded; waiting for Ancient Affection.");
+    public static void Initialize() => SubscriptionLoader.Initialize();
     public static void InitializeAfterAncient()
     {
         if (_initialized) return;

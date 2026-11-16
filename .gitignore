@@ -19,3 +19,4 @@ AUDIT.md
 .env.*
 *.user
 *.suo
+mod-uploader.log

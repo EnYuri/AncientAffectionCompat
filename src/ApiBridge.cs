@@ -11,9 +11,11 @@ using MegaCrit.Sts2.Core.Runs;
 namespace AncientAffectionCompat;
 
 // Preserve the old evaluation-stack signatures while compiling each forwarded call against
-// the installed game. These are called only from the patch builder's explicit replacement list.
+// the installed game. These are called by the in-memory rewriter's explicit replacement list.
 public static class ApiBridge
 {
+    public static string OriginalAssemblyLocation(System.Reflection.Assembly assembly) =>
+        SubscriptionLoader.OriginalAssemblyPath ?? assembly.Location;
     // Pickup rewards can run in a different order for different players. They must not
     // consume the combat/shared random stream, which would change the next battle.
     public static MegaCrit.Sts2.Core.Random.Rng RewardRng(Player player) => player.PlayerRng.NonCombatGeneration;

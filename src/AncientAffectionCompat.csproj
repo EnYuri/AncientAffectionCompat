@@ -1,10 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <AssemblyName>AncientAffectionCompat</AssemblyName>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <EnableDynamicLoading>true</EnableDynamicLoading>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="../shared/AncientAffectionCompat.Patching.csproj" />
     <Reference Include="sts2" HintPath="$(STS2GameDir)/data_sts2_windows_x86_64/sts2.dll" Private="false" />
     <Reference Include="0Harmony" HintPath="$(STS2GameDir)/data_sts2_windows_x86_64/0Harmony.dll" Private="false" />
     <Reference Include="GodotSharp" HintPath="$(STS2GameDir)/data_sts2_windows_x86_64/GodotSharp.dll" Private="false" />

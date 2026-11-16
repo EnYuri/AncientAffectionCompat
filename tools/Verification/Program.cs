@@ -3,10 +3,11 @@ using System.Runtime.Loader;
 using AncientAffectionCompat;
 using HarmonyLib;
 using Mono.Cecil;
+using AncientAffectionCompat.Patching;
 
 var game = Path.GetFullPath(args.Length > 0 ? args[0] : "..");
 var workshop = Path.GetFullPath(Path.Combine(game, "../../workshop/content/2868840"));
-var candidate = Path.GetFullPath(args.Length > 1 ? args[1] : "dist/candidate");
+var candidate = Path.GetFullPath(args.Length > 1 ? args[1] : "dist/workshop-content");
 var paths = new[] { Path.Combine(game,"data_sts2_windows_x86_64"),
     Path.Combine(workshop,"3737335127/BaseLib"), Path.Combine(workshop,"3747602295/compat/0.113.0"),
     Path.Combine(workshop,"3747602295/shared"), Path.Combine(candidate,"AncientAffectionCompat"),
@@ -17,8 +18,12 @@ AssemblyLoadContext.Default.Resolving += (context, name) => {
 };
 using var resolver = new DefaultAssemblyResolver();
 foreach(var p in paths) resolver.AddSearchDirectory(p);
-var dll = Path.Combine(candidate,"AncientAffection/AncientAffection.dll");
-using var module = ModuleDefinition.ReadModule(dll,new ReaderParameters{AssemblyResolver=resolver});
+var originalDir = Path.GetFullPath(args.Length > 2 ? args[2] : Path.Combine(workshop,"3750930021"));
+var dll = Path.Combine(originalDir,"AncientAffection.dll");
+var originalBytes = File.ReadAllBytes(dll);
+var result = AssemblyRewriter.Rewrite(originalBytes, paths[0], typeof(CompatMod).Assembly.Location);
+using var moduleBytes = new MemoryStream(result.AssemblyBytes);
+using var module = ModuleDefinition.ReadModule(moduleBytes,new ReaderParameters{AssemblyResolver=resolver});
 var failures = new List<string>();
 foreach(var member in module.GetMemberReferences().Where(m => m.DeclaringType.Scope.Name == "sts2"))
     try { if(member.Resolve()==null) failures.Add("Unresolved game API: "+member.FullName); }
@@ -31,7 +36,12 @@ foreach(var method in type.Methods.Where(m=>m.IsVirtual && !m.IsNewSlot))
         if(b.Methods.Any(m=>m.Name==method.Name && m.IsVirtual && m.ReturnType.FullName==method.ReturnType.FullName && m.Parameters.Select(p=>p.ParameterType.FullName).SequenceEqual(method.Parameters.Select(p=>p.ParameterType.FullName)))) { found=true; break; }
     if(!found) failures.Add("Orphaned virtual override: "+method.FullName);
 }
+var prepared = SubscriptionLoader.Prepare(dll, paths[0]);
 var ancient = AssemblyLoadContext.Default.LoadFromAssemblyPath(dll);
+if (!ReferenceEquals(prepared, ancient)) throw new Exception("Game load did not reuse the prepared original.");
+if (ApiBridge.OriginalAssemblyLocation(ancient) != dll) throw new Exception("Original diagnostic path was lost.");
+if (!File.ReadAllBytes(dll).SequenceEqual(originalBytes)) throw new Exception("Original DLL changed.");
+Console.WriteLine("PASS: original path reuses memory assembly; diagnostic source path retained; original DLL unchanged.");
 MegaCrit.Sts2.Core.TestSupport.TestMode.IsOn = true;
 var types=ancient.GetTypes();
 Console.WriteLine($"Loaded {types.Length} original types.");

@@ -8,7 +8,11 @@ if (-not $OriginalModDir) {
     $OriginalModDir = Join-Path $GameDir '../../workshop/content/2868840/3750930021'
 }
 $OriginalModDir = (Resolve-Path -LiteralPath $OriginalModDir).Path
-$candidate = Join-Path $PSScriptRoot 'dist/candidate'
+$candidate = Join-Path $PSScriptRoot 'dist/workshop-content'
+$before = @{}
+foreach ($name in @('AncientAffection.dll','AncientAffection.json','AncientAffection.pck')) {
+    $before[$name] = (Get-FileHash -LiteralPath (Join-Path $OriginalModDir $name) -Algorithm SHA256).Hash
+}
 Push-Location $PSScriptRoot
 try {
     dotnet build src/AncientAffectionCompat.csproj -c Release "-p:STS2GameDir=$GameDir"
@@ -17,16 +21,21 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Patch builder build failed.' }
     dotnet tools/PatchBuilder/bin/Release/net9.0/PatchBuilder.dll $GameDir $OriginalModDir src/bin/Release/net9.0/AncientAffectionCompat.dll $candidate
     if ($LASTEXITCODE -ne 0) { throw 'Patch generation failed.' }
-    dotnet run --project tools/Verification/Verification.csproj -c Release "-p:STS2GameDir=$GameDir" -- $GameDir $candidate
-    if ($LASTEXITCODE -ne 0) { throw 'Verification failed. Do not install this candidate.' }
-    $originalPck = (Get-FileHash -LiteralPath (Join-Path $OriginalModDir 'AncientAffection.pck') -Algorithm SHA256).Hash
-    $patchedPck = (Get-FileHash -LiteralPath (Join-Path $candidate 'AncientAffection/AncientAffection.pck') -Algorithm SHA256).Hash
-    if ($originalPck -ne $patchedPck) { throw 'Original asset/localization PCK was changed.' }
-    if ((Get-FileHash -LiteralPath (Join-Path $OriginalModDir 'AncientAffection.dll') -Algorithm SHA256).Hash -ne '20FB2DCEEA8D83DB5596044EB09F9C3AA9B728B32A71C9FB112E4232561FC085') {
-        throw 'Original DLL changed during verification.'
+    dotnet build tools/LoaderVerification/LoaderVerification.csproj -c Release
+    if ($LASTEXITCODE -ne 0) { throw 'Loader verification build failed.' }
+    foreach ($scenario in @('normal','missing','disabled','duplicate','late','modified','wrong-game')) {
+        dotnet tools/LoaderVerification/bin/Release/net9.0/LoaderVerification.dll $GameDir $candidate $OriginalModDir $scenario
+        if ($LASTEXITCODE -ne 0) { throw "Loader verification failed: $scenario" }
     }
-    Write-Host "Verified candidate: $candidate"
-    Write-Host 'All localization/assets are byte-identical to the original. Live mods were not changed.'
+    dotnet run --project tools/Verification/Verification.csproj -c Release "-p:STS2GameDir=$GameDir" -- $GameDir $candidate $OriginalModDir
+    if ($LASTEXITCODE -ne 0) { throw 'Verification failed. Do not publish this candidate.' }
+    foreach ($name in $before.Keys) {
+        if ((Get-FileHash -LiteralPath (Join-Path $OriginalModDir $name) -Algorithm SHA256).Hash -ne $before[$name]) {
+            throw "Original file changed during verification: $name"
+        }
+    }
+    Write-Host "Verified Workshop add-on: $candidate"
+    Write-Host 'Original DLL, manifest and PCK unchanged. No original content, installers or backups are included.'
 } finally {
     Pop-Location
 }
