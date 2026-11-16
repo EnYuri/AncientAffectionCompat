@@ -4,7 +4,9 @@ using Mono.Cecil.Cil;
 
 namespace AncientAffectionCompat.Patching;
 
-public sealed record RewriteResult(byte[] AssemblyBytes, int ApiCalls, int RewardRngSites, int EligibilityHooks);
+public sealed record ApiCallSite(int MethodToken, int MemberToken, string BridgeName, string MethodName);
+public sealed record RuntimePatchPlan(ApiCallSite[] ApiCalls, Dictionary<int, int> RewardRngCounts, Dictionary<string, int> OriginalMethodTokens, int[] BrokenCallers);
+public sealed record RewriteResult(byte[] AssemblyBytes, int ApiCalls, int RewardRngSites, int EligibilityHooks, RuntimePatchPlan Plan);
 
 public static class AssemblyRewriter
 {
@@ -23,7 +25,9 @@ public static class AssemblyRewriter
         using var original = ModuleDefinition.ReadModule(input, new ReaderParameters { AssemblyResolver = resolver });
         using var bridge = ModuleDefinition.ReadModule(bridgePath, new ReaderParameters { AssemblyResolver = resolver });
         var api = bridge.GetType("AncientAffectionCompat.ApiBridge");
-        var edits = new List<object>();
+        var originalMethodTokens = AllTypes(original.Types).SelectMany(t => t.Methods)
+            .ToDictionary(m => m.FullName, m => m.MetadataToken.ToInt32());
+        var edits = new List<ApiCallSite>();
         var unresolved = new HashSet<string>();
         foreach (var type in AllTypes(original.Types))
         foreach (var method in type.Methods.Where(m => m.HasBody))
@@ -53,14 +57,18 @@ public static class AssemblyRewriter
             var expectedReturn = member.Name == ".ctor" ? member.DeclaringType.FullName : member.ReturnType.FullName;
             if (replacement.ReturnType.FullName != expectedReturn)
                 throw new InvalidOperationException("Bridge return mismatch: " + member.FullName);
-            edits.Add(new { method = method.FullName, oldReference = member.FullName, bridge = name });
+            edits.Add(new ApiCallSite(method.MetadataToken.ToInt32(), member.MetadataToken.ToInt32(), name, method.FullName));
             instruction.OpCode = OpCodes.Call;
             instruction.Operand = original.ImportReference(replacement);
         }
         if (unresolved.Count > 0) throw new InvalidOperationException("Unsupported missing game APIs:\n" + string.Join("\n", unresolved));
         if (edits.Count != 18) throw new InvalidOperationException($"Expected 18 reviewed call sites, found {edits.Count}.");
+        var brokenNames = edits.Select(e => e.MethodName).ToHashSet();
+        var brokenCallers = AllTypes(original.Types).SelectMany(t => t.Methods).Where(m => m.HasBody &&
+            m.Body.Instructions.Any(i => i.Operand is MethodReference called && brokenNames.Contains(called.FullName)))
+            .Select(m => originalMethodTokens[m.FullName]).ToArray();
 
-        var rngEdits = new List<string>();
+        var rngEdits = new List<int>();
         var rewardRng = original.ImportReference(api.Methods.Single(m => m.Name == "RewardRng"));
         foreach (var type in AllTypes(original.Types))
         {
@@ -80,42 +88,16 @@ public static class AssemblyRewriter
                     instructions[i].Operand = rewardRng;
                     instructions[i+1].OpCode = instructions[i+2].OpCode = OpCodes.Nop;
                     instructions[i+1].Operand = instructions[i+2].Operand = null;
-                    rngEdits.Add(method.FullName);
+                    rngEdits.Add(method.MetadataToken.ToInt32());
                 }
             }
         }
         if (rngEdits.Count != 14) throw new InvalidOperationException($"Expected 14 reward RNG sites, found {rngEdits.Count}.");
 
-        // IsAllowed became a non-virtual guard in 0.113.1. Move the original mode restrictions
-        // to the replacement virtual hook so they are still dispatched through RelicModel.
-        foreach (var name in new[] { "ImprovedSilverCrucible", "ImprovedWingedBoots", "ImprovedMassiveScroll" })
-        {
-            var method = original.GetType("AncientAffection." + name).Methods.Single(m => m.Name == "IsAllowed");
-            method.Name = "IsAllowedInternal";
-            method.IsPublic = false;
-            method.IsFamily = true;
-        }
-
-        // Initialize runtime fixes only after the original has registered all of its content/patches.
-        var initialize = original.GetType("AncientAffection.MainFile").Methods.Single(m => m.Name == "Initialize");
-        var hook = original.ImportReference(bridge.GetType("AncientAffectionCompat.CompatMod").Methods.Single(m => m.Name == "InitializeAfterAncient"));
-        foreach (var ret in initialize.Body.Instructions.Where(i => i.OpCode == OpCodes.Ret).ToArray())
-        {
-            ret.OpCode = OpCodes.Call;
-            ret.Operand = hook;
-            initialize.Body.GetILProcessor().InsertAfter(ret, Instruction.Create(OpCodes.Ret));
-        }
-        // A stream-loaded assembly has no Location. Keep the original diagnostics tied to
-        // the subscribed source files rather than the process working directory.
-        var diagnostics = original.GetType("AncientAffection.AncientAffectionDiagnostics")
-            .Methods.Single(m => m.Name == "CreateLocalSignature");
-        var location = diagnostics.Body.Instructions.Single(i => i.Operand is MethodReference
-            { Name: "get_Location", DeclaringType.FullName: "System.Reflection.Assembly" });
-        location.OpCode = OpCodes.Call;
-        location.Operand = original.ImportReference(api.Methods.Single(m => m.Name == "OriginalAssemblyLocation"));
         using var output = new MemoryStream();
         original.Write(output);
-        return new RewriteResult(output.ToArray(), edits.Count, rngEdits.Count, 3);
+        return new RewriteResult(output.ToArray(), edits.Count, rngEdits.Count, 3,
+            new RuntimePatchPlan(edits.ToArray(), rngEdits.GroupBy(t => t).ToDictionary(g => g.Key, g => g.Count()), originalMethodTokens, brokenCallers));
     }
 
     static IEnumerable<TypeDefinition> AllTypes(IEnumerable<TypeDefinition> types)

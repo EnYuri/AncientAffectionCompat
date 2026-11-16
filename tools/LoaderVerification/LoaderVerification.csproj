@@ -1,3 +1,4 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup><Reference Include="0Harmony" HintPath="$(STS2GameDir)/data_sts2_windows_x86_64/0Harmony.dll" Private="false" /></ItemGroup>
 </Project>

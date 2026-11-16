@@ -24,6 +24,6 @@ public static class CompatMod
     internal static Type Type(string name) => Ancient.GetType("AncientAffection." + name, true)!;
     internal static MethodInfo Method(string type, string name) => AccessTools.Method(Type(type), name)
         ?? throw new MissingMethodException(type, name);
-    internal static object? Call(string type, string name, params object?[] args) => Method(type, name).Invoke(null, args);
+    internal static object? Call(string type, string name, params object?[] args) => RuntimeApiPatches.Invoke(Method(type, name), null, args);
     internal static void Log(string text) => Console.WriteLine("[AncientAffectionCompat] " + text);
 }

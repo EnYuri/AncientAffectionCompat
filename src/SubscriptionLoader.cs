@@ -9,32 +9,28 @@ namespace AncientAffectionCompat;
 
 public static class SubscriptionLoader
 {
-    public static string? OriginalAssemblyPath { get; private set; }
-    private static Assembly? _prepared;
+    private static Assembly? _applied;
 
     public static void Initialize()
     {
         var originals = ModManager.Mods.Where(m => m.manifest?.id == "AncientAffection").ToArray();
-        if (originals.Length != 1 || originals[0].state != ModLoadState.None)
-            throw new InvalidOperationException("Enable exactly one original Ancient Affection and place Ancient Affection Compatibility Patch ABOVE it in the mod list, then restart. 원본을 활성화하고 패치를 원본 위에 배치한 뒤 재시작하세요.");
-        var gameAssemblies = Path.GetDirectoryName(typeof(ModManager).Assembly.Location)!;
-        Prepare(Path.Combine(originals[0].path, "AncientAffection.dll"), gameAssemblies);
-        CompatMod.Log("Original subscription prepared in memory. Waiting for the game's normal Ancient Affection initialization; no files changed.");
+        if (originals.Length != 1 || originals[0].state != ModLoadState.Loaded || originals[0].errors?.Count > 0)
+            throw new InvalidOperationException("Enable exactly one original Ancient Affection with BaseLib and RitsuLib. The game's dependency loader loads it before this patch automatically. 원본과 필수 모드를 활성화하세요. 로딩 순서는 자동으로 정렬됩니다.");
+        Apply(Path.Combine(originals[0].path, "AncientAffection.dll"), Path.GetDirectoryName(typeof(ModManager).Assembly.Location)!);
+        CompatMod.Log("Original subscription patched after initialization; dependency order is automatic, no files changed.");
     }
 
-    // Keep Cecil references in a separate call so the dependency is loaded before JIT.
-    public static Assembly Prepare(string originalPath, string gameAssemblyDirectory)
+    // Resolve helper assemblies before JIT-compiling methods that reference them.
+    public static Assembly Apply(string originalPath, string gameAssemblyDirectory)
     {
         var context = AssemblyLoadContext.GetLoadContext(typeof(SubscriptionLoader).Assembly)!;
         originalPath = Path.GetFullPath(originalPath);
-        if (_prepared != null)
+        if (_applied != null)
         {
-            if (!string.Equals(OriginalAssemblyPath, originalPath, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("A different Ancient Affection source was already prepared. Restart the game.");
-            return _prepared;
+            if (!string.Equals(_applied.Location, originalPath, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("A different Ancient Affection source was already patched. Restart the game.");
+            return _applied;
         }
-        if (context.Assemblies.Any(a => a.GetName().Name == "AncientAffection"))
-            throw new InvalidOperationException("Ancient Affection loaded before its compatibility patch. Move this patch ABOVE Ancient Affection and restart. 패치를 원본 위로 옮긴 뒤 재시작하세요.");
         var gameDir = Directory.GetParent(Path.GetFullPath(gameAssemblyDirectory))!.FullName;
         using var release = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(gameDir, "release_info.json")));
         if (release.RootElement.GetProperty("version").GetString() != "v0.113.1")
@@ -44,19 +40,22 @@ public static class SubscriptionLoader
             context.LoadFromAssemblyPath(Path.Combine(ownDirectory, "Mono.Cecil.dll"));
         if (!context.Assemblies.Any(a => a.GetName().Name == "AncientAffectionCompat.Patching"))
             context.LoadFromAssemblyPath(Path.Combine(ownDirectory, "AncientAffectionCompat.Patching.dll"));
-        return RewriteAndLoad(context, originalPath, gameAssemblyDirectory);
+        return ApplyRuntime(context, originalPath, gameAssemblyDirectory);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static Assembly RewriteAndLoad(AssemblyLoadContext context, string originalPath, string gameAssemblyDirectory)
+    private static Assembly ApplyRuntime(AssemblyLoadContext context, string originalPath, string gameAssemblyDirectory)
     {
         var result = AssemblyRewriter.Rewrite(File.ReadAllBytes(originalPath), gameAssemblyDirectory,
             typeof(SubscriptionLoader).Assembly.Location);
-        using var bytes = new MemoryStream(result.AssemblyBytes, writable: false);
-        var assembly = context.LoadFromStream(bytes);
-        OriginalAssemblyPath = originalPath;
-        _prepared = assembly;
-        CompatMod.Log($"Prepared {result.ApiCalls} API calls, {result.RewardRngSites} reward RNG sites and {result.EligibilityHooks} eligibility hooks in memory.");
-        return assembly;
+        var ancient = context.Assemblies.SingleOrDefault(a => a.GetName().Name == "AncientAffection")
+            ?? throw new InvalidOperationException("The original Ancient Affection dependency has not loaded.");
+        if (!string.Equals(Path.GetFullPath(ancient.Location), originalPath, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Loaded Ancient Affection does not match the subscribed source.");
+        RuntimeApiPatches.Install(ancient, result);
+        CompatMod.InitializeAfterAncient();
+        _applied = ancient;
+        CompatMod.Log($"Applied {result.ApiCalls} API calls, {result.RewardRngSites} reward RNG sites and {result.EligibilityHooks} eligibility hooks after original load.");
+        return ancient;
     }
 }

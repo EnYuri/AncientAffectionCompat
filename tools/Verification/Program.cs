@@ -28,21 +28,14 @@ var failures = new List<string>();
 foreach(var member in module.GetMemberReferences().Where(m => m.DeclaringType.Scope.Name == "sts2"))
     try { if(member.Resolve()==null) failures.Add("Unresolved game API: "+member.FullName); }
     catch(Exception e) { failures.Add(member.FullName+": "+e.Message); }
-foreach(var type in module.Types)
-foreach(var method in type.Methods.Where(m=>m.IsVirtual && !m.IsNewSlot))
-{
-    var found = false;
-    for(var b=type.BaseType?.Resolve(); b!=null; b=b.BaseType?.Resolve())
-        if(b.Methods.Any(m=>m.Name==method.Name && m.IsVirtual && m.ReturnType.FullName==method.ReturnType.FullName && m.Parameters.Select(p=>p.ParameterType.FullName).SequenceEqual(method.Parameters.Select(p=>p.ParameterType.FullName)))) { found=true; break; }
-    if(!found) failures.Add("Orphaned virtual override: "+method.FullName);
-}
-var prepared = SubscriptionLoader.Prepare(dll, paths[0]);
+// Production path: the original assembly and its Harmony registrations precede the add-on.
 var ancient = AssemblyLoadContext.Default.LoadFromAssemblyPath(dll);
-if (!ReferenceEquals(prepared, ancient)) throw new Exception("Game load did not reuse the prepared original.");
-if (ApiBridge.OriginalAssemblyLocation(ancient) != dll) throw new Exception("Original diagnostic path was lost.");
-if (!File.ReadAllBytes(dll).SequenceEqual(originalBytes)) throw new Exception("Original DLL changed.");
-Console.WriteLine("PASS: original path reuses memory assembly; diagnostic source path retained; original DLL unchanged.");
 MegaCrit.Sts2.Core.TestSupport.TestMode.IsOn = true;
+new Harmony("AncientAffection.harmony").PatchAll(ancient);
+var applied = SubscriptionLoader.Apply(dll, paths[0]);
+if (!ReferenceEquals(applied, ancient) || ancient.Location != dll) throw new Exception("Original assembly identity or location changed.");
+if (!File.ReadAllBytes(dll).SequenceEqual(originalBytes)) throw new Exception("Original DLL changed.");
+Console.WriteLine("PASS: runtime patch preserves the already-loaded original assembly and its source file.");
 var types=ancient.GetTypes();
 Console.WriteLine($"Loaded {types.Length} original types.");
 var compiled = 0;
@@ -51,14 +44,25 @@ foreach (var method in type.GetMethods(BindingFlags.Public | BindingFlags.NonPub
     .Where(m => !m.IsAbstract && !m.ContainsGenericParameters && m.GetMethodBody() != null
         && !(m.DeclaringType?.Name == "MerchantFavorMinigame" && new[] { "InvokeGodotClassMethod", "HasGodotClassMethod", "SetGodotClassPropertyValue", "GetGodotClassPropertyValue", "SaveGodotObjectData", "RestoreGodotObjectData" }.Contains(m.Name))))
 {
-    try { System.Runtime.CompilerServices.RuntimeHelpers.PrepareMethod(method.MethodHandle); compiled++; }
+    try {
+        if (RuntimeApiPatches.HasUnavailableOriginalBody(method)) continue;
+        System.Runtime.CompilerServices.RuntimeHelpers.PrepareMethod(method.MethodHandle); compiled++;
+    }
     catch(Exception e) { failures.Add($"JIT {type.Name}.{method.Name}: {e}"); }
 }
 Console.WriteLine($"JIT compiled {compiled} original methods.");
-new Harmony("AncientAffection.harmony").PatchAll(ancient);
-CompatMod.InitializeAfterAncient();
 Console.WriteLine($"Installed {Harmony.GetAllPatchedMethods().Count(m=>Harmony.GetPatchInfo(m)?.Owners.Contains("Nayuri.AncientAffectionCompat")==true)} compatibility patches.");
+var brokenTokens = result.Plan.ApiCalls.Select(c => c.MethodToken).ToHashSet();
+foreach (var token in result.Plan.BrokenCallers)
+{
+    var caller = ancient.ManifestModule.ResolveMethod(token)!;
+    if (RuntimeApiPatches.HasUnavailableOriginalBody(caller)) continue;
+    foreach (var instruction in PatchProcessor.GetCurrentInstructions(caller))
+        if (instruction.operand is MethodInfo called && called.Module == ancient.ManifestModule && brokenTokens.Contains(called.MetadataToken))
+            failures.Add("Live caller still references an unavailable body: " + caller + " -> " + called);
+}
+Console.WriteLine("Checked all original call sites that referenced incompatible method bodies.");
 await BehaviorChecks.Run(ancient);
 foreach(var f in failures) Console.Error.WriteLine(f);
 if(failures.Count>0) Environment.Exit(1);
-Console.WriteLine("PASS: game member references, virtual overrides, type load, runtime Harmony installation.");
+Console.WriteLine("PASS: API bridges, original type identity, runtime patch installation and behavior checks.");

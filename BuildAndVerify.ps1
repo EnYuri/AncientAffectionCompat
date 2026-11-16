@@ -21,9 +21,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Patch builder build failed.' }
     dotnet tools/PatchBuilder/bin/Release/net9.0/PatchBuilder.dll $GameDir $OriginalModDir src/bin/Release/net9.0/AncientAffectionCompat.dll $candidate
     if ($LASTEXITCODE -ne 0) { throw 'Patch generation failed.' }
-    dotnet build tools/LoaderVerification/LoaderVerification.csproj -c Release
+    dotnet build tools/LoaderVerification/LoaderVerification.csproj -c Release "-p:STS2GameDir=$GameDir"
     if ($LASTEXITCODE -ne 0) { throw 'Loader verification build failed.' }
-    foreach ($scenario in @('normal','missing','disabled','duplicate','late','modified','wrong-game')) {
+    foreach ($scenario in @('ordering','normal','missing','disabled','duplicate','modified','wrong-game')) {
         dotnet tools/LoaderVerification/bin/Release/net9.0/LoaderVerification.dll $GameDir $candidate $OriginalModDir $scenario
         if ($LASTEXITCODE -ne 0) { throw "Loader verification failed: $scenario" }
     }

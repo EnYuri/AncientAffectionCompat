@@ -14,6 +14,8 @@ using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Rewards;
 using MegaCrit.Sts2.Core.Entities.Merchant;
+using MegaCrit.Sts2.Core.Hooks;
+using MegaCrit.Sts2.Core.Rooms;
 
 internal static class BehaviorChecks
 {
@@ -23,11 +25,24 @@ internal static class BehaviorChecks
     private static bool Print(string __1) { Console.WriteLine(__1); return false; }
     private static bool BlockSaves() => throw new InvalidOperationException("Verification must not access SaveManager.");
     private static List<Reward> _offered = [];
+    private static TaskCompletionSource? _pendingReward;
     private static List<ModelId[]> _choices = [];
     private static decimal _strength;
     private static CardModel? _exhausted;
     private static bool CaptureRewards(List<Reward> __1, ref Task __result)
-    { _offered = __1; __result = Task.CompletedTask; return false; }
+    { _offered = __1; __result = _pendingReward?.Task ?? Task.CompletedTask; return false; }
+    private static bool CaptureRewardsSet(RewardsSet __instance, ref Task __result)
+    { _offered = __instance.Rewards; __result = Task.CompletedTask; return false; }
+    private static bool NeowCandidates(ref List<RelicModel> __result)
+    { __result = [ModelDb.Relic<MegaCrit.Sts2.Core.Models.Relics.Circlet>()]; return false; }
+    private sealed class RewardRoom : AbstractRoom
+    {
+        public override RoomType RoomType => RoomType.Monster;
+        public override ModelId? ModelId => null;
+        public override Task EnterInternal(IRunState? run, bool restoring) => Task.CompletedTask;
+        public override Task Exit(IRunState? run) => Task.CompletedTask;
+        public override Task Resume(AbstractRoom previous, IRunState? run) => Task.CompletedTask;
+    }
     private static bool SelectRelic(Player __0, IReadOnlyList<RelicModel> __1, ref Task<RelicModel> __result)
     {
         Check(__1.Count == 3 && __1.All(r=>r.IsWax), "Toy Box: three wax choices");
@@ -94,13 +109,37 @@ internal static class BehaviorChecks
         Console.WriteLine("PASS: all added relics clone and initialize dynamic variables.");
         var removal=new MerchantCardRemovalEntry(owner);
         var inventory=new MerchantInventory(owner,[],[],[],[],removal,[]);
-        CompatMod.Call("MerchantFavorPatch","RememberMerchantInventory",inventory);
+        var merchantTarget = Harmony.GetAllPatchedMethods().Single(m => m.DeclaringType?.Name == "NMerchantInventory" && m.Name == "Initialize");
+        var merchantPrefix = Harmony.GetPatchInfo(merchantTarget).Prefixes.Single(p => p.owner == CompatMod.HarmonyId).PatchMethod;
+        merchantPrefix.Invoke(null, [inventory]);
         Check(ApiBridge.AllEntries(inventory).SequenceEqual(inventory.AllEntries),"Merchant inventory API adapter");
         var entryKey=CompatMod.Call("MerchantFavorPatch","BuildMerchantBargainEntryKey",inventory,removal);
         Check(entryKey is string {Length:>0},"Merchant entry key");
+        for (var repeat = 0; repeat < 1000; repeat++)
+        {
+            merchantPrefix.Invoke(null, [inventory]);
+            Check(Equals(entryKey, CompatMod.Call("MerchantFavorPatch", "BuildMerchantBargainEntryKey", inventory, removal)), "Repeated merchant dispatch");
+        }
         Console.WriteLine("PASS: original merchant inventory bookkeeping and bargain key execute against the new AllEntries API.");
         var h=new Harmony("compat.verification.behavior");
         h.Patch(AccessTools.Method(typeof(RewardsCmd),"OfferCustom"),prefix:new HarmonyMethod(typeof(BehaviorChecks),nameof(CaptureRewards)));
+        h.Patch(AccessTools.Method(typeof(RewardsSet),"Offer"),prefix:new HarmonyMethod(typeof(BehaviorChecks),nameof(CaptureRewardsSet)));
+        h.Patch(CompatMod.Method("ImprovedNeowsBones", "GetValidRelicsWithDiagnostics"), prefix: new HarmonyMethod(typeof(BehaviorChecks), nameof(NeowCandidates)));
+        await Relic("BelovedNeowsBones", owner).AfterObtained();
+        Check(_offered.Count == 2 && _offered.All(r => r is RelicReward), "Neow's Bones: copied instance callback preserves its owner");
+        var redRewards = (List<Reward>)CompatMod.Call("RedHarassment", "CreateRelicRewards", new List<RelicModel> { ModelDb.Relic<MegaCrit.Sts2.Core.Models.Relics.Circlet>() }, owner, 2)!;
+        Check(redRewards.Count == 2 && redRewards.All(r => r is RelicReward), "Harassment: closure callback and fallback rewards");
+        var red = Relic("RedDesecration", owner);
+        await (Task)CompatMod.Method("RedDesecration", "Execute").Invoke(red, [owner, 1])!;
+        Check(_offered.Count == 1 && _offered[0] is CardReward, "Desecration: copied closure callback");
+        var rewardOwner = CreatePlayer(77);
+        var rewardRun = RunState.CreateForTest([rewardOwner], seed: "REWARDDISPATCH");
+        var hell = Relic("HellNeowAidRelic", rewardOwner);
+        rewardOwner.AddRelicInternal(hell, silent: true);
+        var hellRewards = new List<Reward> { new CardReward(CardCreationOptions.ForRoom(rewardOwner, RoomType.Monster), 3, rewardOwner) };
+        Check(Hook.ModifyRewards(rewardRun, rewardOwner, hellRewards, new RewardRoom()).Contains(hell), "Hell Neow: original game dispatch reaches replacement");
+        Check((int)AccessTools.Property(typeof(CardReward), "OptionCount").GetValue(hellRewards[0])! == 5, "Hell Neow: five card choices");
+        Console.WriteLine("PASS: copied instance/closure reward callbacks and the game's virtual reward dispatch.");
         foreach(var tier in new[]{"Devoted","Beloved"})
         {
             await Relic(tier+"GlassEye",owner).AfterObtained();
@@ -114,6 +153,15 @@ internal static class BehaviorChecks
             Check(rarities.SequenceEqual(new[]{CardRarity.Common,CardRarity.Common,CardRarity.Uncommon,CardRarity.Uncommon,CardRarity.Rare}),"Glass Eye rarity sequence");
         }
         Console.WriteLine("PASS: both Glass Eyes, five rewards, three choices each, Common/Common/Uncommon/Uncommon/Rare.");
+        _pendingReward = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var suspended = Relic("DevotedGlassEye", owner).AfterObtained();
+        Check(!suspended.IsCompleted, "Async replacement actually suspends");
+        GC.Collect(); GC.WaitForPendingFinalizers();
+        _pendingReward.SetResult();
+        await suspended;
+        _pendingReward = null;
+        Check(_offered.Count == 5, "Async replacement resumes with the same rewards");
+        Console.WriteLine("PASS: async relic suspends, survives collection and resumes on its continuation.");
         foreach(var tier in new[]{"Devoted","Beloved"})
         {
             await Relic(tier+"Kaleidoscope",owner).AfterObtained();
@@ -139,7 +187,7 @@ internal static class BehaviorChecks
             Check(_choices.Count==4&&owner.Relics.Count==before+4,"Toy Box: four selections/four obtains");
         }
         Console.WriteLine("PASS: both Toy Boxes, four rounds of three wax choices, acquired relic exclusion.");
-        var mittensState=CompatMod.Method("ImprovedToastyMittens","BeforeHandDraw").GetCustomAttribute<System.Runtime.CompilerServices.AsyncStateMachineAttribute>()!.StateMachineType;
+        var mittensState=RuntimeApiPatches.EffectiveStateMachine(CompatMod.Method("ImprovedToastyMittens","BeforeHandDraw"));
         h.Patch(AccessTools.Method(mittensState,"MoveNext"),transpiler:new HarmonyMethod(typeof(BehaviorChecks),nameof(CaptureMittens)));
         h.Patch(AccessTools.Method(typeof(CardCmd),"Exhaust"),prefix:new HarmonyMethod(typeof(BehaviorChecks),nameof(Exhaust)));
         h.Patch(AccessTools.Method(typeof(CardPileCmd),"ShuffleIfNecessary"),prefix:new HarmonyMethod(typeof(BehaviorChecks),nameof(Shuffle)));
