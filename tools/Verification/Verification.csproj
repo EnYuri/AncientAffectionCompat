@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/AncientAffectionCompat.csproj" />
+    <Reference Include="sts2" HintPath="$(STS2GameDir)/data_sts2_windows_x86_64/sts2.dll" />
+    <Reference Include="0Harmony" HintPath="$(STS2GameDir)/data_sts2_windows_x86_64/0Harmony.dll" />
+    <Reference Include="GodotSharp" HintPath="$(STS2GameDir)/data_sts2_windows_x86_64/GodotSharp.dll" />
+    <PackageReference Include="Mono.Cecil" Version="0.11.6" />
+  </ItemGroup>
+</Project>

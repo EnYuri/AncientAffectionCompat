@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <STS2GameDir Condition="'$(STS2GameDir)' == ''">$(MSBuildThisFileDirectory)..</STS2GameDir>
+  </PropertyGroup>
+</Project>
