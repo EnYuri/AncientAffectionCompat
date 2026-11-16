@@ -6,13 +6,8 @@ __pycache__/
 backups/
 
 # Local agent notes and configuration are not distribution material.
-AGENTS.md
 WORKLOG.md
-CLAUDE.md
-GEMINI.md
-.codex/
-.claude/
-.agents/
+AUDIT.md
 
 # Never publish installed game/mod binaries, decompiled material or secrets.
 *.dll
